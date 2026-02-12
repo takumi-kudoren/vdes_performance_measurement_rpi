@@ -38,9 +38,7 @@ def _resolve_report_file_path(report_timestamp_utc: datetime) -> Path:
 
 # メイン処理
 def write_receive_report_jsonl(
-    rx_tdb_count: int,
-    rx_payload_chars_total: int,
-    report_timestamp_utc: datetime | None = None,
+    rx_tdb_count: int, rx_payload_chars_total: int, report_timestamp_utc: datetime | None = None
 ) -> Path:
     """受信集計結果を1行JSONLで書き出す。
 
@@ -67,10 +65,7 @@ def write_receive_report_jsonl(
             output_timestamp_utc = report_timestamp_utc.astimezone(UTC)
 
     report_file_path = _resolve_report_file_path(output_timestamp_utc)
-    report_record = {
-        "rx_tdb_count": rx_tdb_count,
-        "rx_payload_chars_total": rx_payload_chars_total,
-    }
+    report_record = {"rx_tdb_count": rx_tdb_count, "rx_payload_chars_total": rx_payload_chars_total}
     report_line = json.dumps(report_record, ensure_ascii=False)
     report_file_path.write_text(report_line + "\n", encoding="utf-8")
     return report_file_path

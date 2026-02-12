@@ -7,7 +7,7 @@ from logging.handlers import QueueHandler
 from multiprocessing import queues
 from pathlib import Path
 
-LOG_FILE_NAME = "vdes_performance_measurement.log"
+LOG_FILE_NAME = "vdes_performance_measurement_rpi.log"
 LOG_OUTPUT_FORMAT = "%(asctime)s %(processName)s %(levelname)s %(name)s - %(message)s"
 LOG_QUEUE_STOP_SIGNAL = None
 

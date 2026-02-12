@@ -67,8 +67,7 @@ def main() -> None:
         )
 
         report_file_path = write_receive_report_jsonl(
-            rx_tdb_count=receive_metrics.rx_tdb_count,
-            rx_payload_chars_total=receive_metrics.rx_payload_chars_total,
+            rx_tdb_count=receive_metrics.rx_tdb_count, rx_payload_chars_total=receive_metrics.rx_payload_chars_total
         )
         logger.info("終了: レポートファイル作成が完了しました。出力先=%s", report_file_path)
 

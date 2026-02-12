@@ -154,8 +154,7 @@ def _extract_payload_char_count(vatdb_sentence: str) -> int | None:
 
     if len(sentence_fields) <= payload_index:
         logger.warning(
-            "異常: VATDBセンテンスの項目数が不足しているため集計対象から除外しました。受信データ=%s",
-            vatdb_sentence,
+            "異常: VATDBセンテンスの項目数が不足しているため集計対象から除外しました。受信データ=%s", vatdb_sentence
         )
         return None
 
@@ -225,11 +224,7 @@ def collect_receive_metrics_until_next_minute_boundary() -> ReceiveMetrics:
                 except TimeoutError:
                     continue
                 except OSError:
-                    logger.exception(
-                        "異常: UDP受信に失敗しました。待受=%s:%s",
-                        RECEIVE_BIND_IP,
-                        RECEIVE_PORT,
-                    )
+                    logger.exception("異常: UDP受信に失敗しました。待受=%s:%s", RECEIVE_BIND_IP, RECEIVE_PORT)
                     continue
 
                 received_text = received_data.decode("utf-8", errors="replace")
@@ -277,8 +272,7 @@ def collect_receive_metrics_until_next_minute_boundary() -> ReceiveMetrics:
                     udp_socket.setsockopt(socket.IPPROTO_IP, socket.IP_DROP_MEMBERSHIP, membership_request)
                 except OSError:
                     logger.exception(
-                        "異常: マルチキャストグループ離脱に失敗しました。グループ=%s",
-                        RECEIVE_MULTICAST_IP,
+                        "異常: マルチキャストグループ離脱に失敗しました。グループ=%s", RECEIVE_MULTICAST_IP
                     )
 
     if first_tdb_received_utc is None or measurement_end_utc is None:
