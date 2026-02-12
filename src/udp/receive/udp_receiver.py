@@ -19,6 +19,25 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class ReceivedTdbSentenceRecord:
+    """集計対象として採用したTDBセンテンスの受信情報を保持する。
+
+    引数:
+        received_utc: センテンスを受信したUTC時刻。
+        tdb_sentence: 受信したTDBセンテンス文字列。
+
+    戻り値:
+        なし。
+
+    例外:
+        なし。
+    """
+
+    received_utc: datetime
+    tdb_sentence: str
+
+
+@dataclass(frozen=True)
 class ReceiveMetrics:
     """受信集計の結果を保持する。
 
@@ -27,6 +46,7 @@ class ReceiveMetrics:
         rx_payload_chars_total: 計測期間中に受信したpayload総文字数。
         first_tdb_received_utc: 最初の有効TDBを受信したUTC時刻。
         measurement_end_utc: 計測終了のUTC時刻。
+        received_tdb_sentence_records: 集計対象として採用したTDBセンテンス一覧。
 
     戻り値:
         なし。
@@ -39,6 +59,7 @@ class ReceiveMetrics:
     rx_payload_chars_total: int
     first_tdb_received_utc: datetime
     measurement_end_utc: datetime
+    received_tdb_sentence_records: list[ReceivedTdbSentenceRecord]
 
 
 # 補助処理
@@ -169,7 +190,7 @@ def collect_receive_metrics_until_next_minute_boundary() -> ReceiveMetrics:
         なし。
 
     戻り値:
-        受信件数とpayload総文字数を含む集計結果。
+        受信件数・payload総文字数・集計対象センテンス一覧を含む集計結果。
 
     例外:
         OSError: ソケット初期化に失敗した場合。
@@ -190,6 +211,7 @@ def collect_receive_metrics_until_next_minute_boundary() -> ReceiveMetrics:
     rx_payload_chars_total = 0
     first_tdb_received_utc: datetime | None = None
     measurement_end_utc: datetime | None = None
+    received_tdb_sentence_records: list[ReceivedTdbSentenceRecord] = []
 
     udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     try:
@@ -263,6 +285,9 @@ def collect_receive_metrics_until_next_minute_boundary() -> ReceiveMetrics:
 
                     rx_tdb_count += 1
                     rx_payload_chars_total += payload_char_count
+                    received_tdb_sentence_records.append(
+                        ReceivedTdbSentenceRecord(received_utc=sentence_received_utc, tdb_sentence=vatdb_sentence)
+                    )
                 else:
                     continue
                 break
@@ -288,4 +313,5 @@ def collect_receive_metrics_until_next_minute_boundary() -> ReceiveMetrics:
         rx_payload_chars_total=rx_payload_chars_total,
         first_tdb_received_utc=first_tdb_received_utc,
         measurement_end_utc=measurement_end_utc,
+        received_tdb_sentence_records=received_tdb_sentence_records,
     )

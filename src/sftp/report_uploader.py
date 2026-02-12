@@ -50,9 +50,7 @@ def upload_report_file_until_success(local_report_file_path: Path) -> str:
     if not local_report_file_path.exists():
         raise FileNotFoundError(f"アップロード対象のレポートが存在しません。path={local_report_file_path}")
 
-    remote_report_path = _join_remote_path(
-        sftp_report_constants.REMOTE_REPORT_JSON_DIRECTORY, local_report_file_path.name
-    )
+    remote_report_path = _join_remote_path(sftp_report_constants.REMOTE_REPORT_DIRECTORY, local_report_file_path.name)
 
     logger.info(
         "開始: 受信レポートのSFTPアップロードを開始します。ローカル=%s リモート=%s",
