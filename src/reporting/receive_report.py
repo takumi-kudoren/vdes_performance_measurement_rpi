@@ -90,7 +90,6 @@ def write_receive_report_jsonl(
         "record_type": "summary",
         "rx_tdb_count": rx_tdb_count,
         "rx_payload_chars_total": rx_payload_chars_total,
-        "report_utc": _format_utc_text(output_timestamp_utc),
     }
     report_jsonl_lines.append(json.dumps(summary_record, ensure_ascii=False))
 
@@ -114,10 +113,10 @@ def _format_utc_text(timestamp_utc: datetime) -> str:
         timestamp_utc: UTCとして扱う日時。
 
     戻り値:
-        `YYYY-MM-DDTHH:MM:SS.ffffffZ`形式の文字列。
+        `YYYY-MM-DDTHH:MM:SS.sssZ`形式の文字列。
 
     例外:
         なし。
     """
     normalized_utc = _normalize_utc_timestamp(timestamp_utc)
-    return normalized_utc.isoformat(timespec="microseconds").replace("+00:00", "Z")
+    return normalized_utc.isoformat(timespec="milliseconds").replace("+00:00", "Z")

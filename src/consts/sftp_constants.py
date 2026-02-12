@@ -7,7 +7,7 @@ USERNAME = "cl-nmea-sftpuser"
 
 # 秘密鍵ファイルのパス。ホームディレクトリ基準の相対パスを指定する。
 # linux環境では `/etc/ssh/cl-nmea-sftpuser.key` を指す。
-PRIVATE_KEY_PATH = "/etc/ssh/cl-nmea-sftpuser.key"
+PRIVATE_KEY_PATH = "~/.ssh/cl-nmea-sftpuser.key"
 
 # 秘密鍵のパスフレーズ。不要ならNoneにする。
 PRIVATE_KEY_PASSPHRASE = None
