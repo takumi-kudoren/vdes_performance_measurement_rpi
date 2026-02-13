@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import logging
 import time
 from pathlib import Path
@@ -29,6 +30,70 @@ def _join_remote_path(directory_path: str, file_name: str) -> str:
         なし。
     """
     return f"{directory_path.rstrip('/')}/{file_name}"
+
+
+def _is_remote_path_exists(sftp_client: paramiko.SFTPClient, remote_path: str) -> bool:
+    """サーバー上のパスが存在するかを判定する。
+
+    引数:
+        sftp_client: SFTPクライアント。
+        remote_path: 確認対象のサーバーパス。
+
+    戻り値:
+        パスが存在する場合はTrue、存在しない場合はFalse。
+
+    例外:
+        OSError: 存在判定以外のSFTPエラーが発生した場合。
+    """
+    try:
+        sftp_client.stat(remote_path)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        if exc.errno == errno.ENOENT:
+            return False
+        raise
+    return True
+
+
+def _ensure_remote_directory(sftp_client: paramiko.SFTPClient, directory_path: str) -> None:
+    """サーバー上のディレクトリを必要に応じて作成する。
+
+    引数:
+        sftp_client: SFTPクライアント。
+        directory_path: 作成対象のサーバーディレクトリパス。
+
+    戻り値:
+        なし。
+
+    例外:
+        OSError: ディレクトリ作成に失敗した場合。
+    """
+    normalized_directory_path = directory_path.rstrip("/")
+    if not normalized_directory_path or normalized_directory_path == "/":
+        return
+
+    path_fragments = [fragment for fragment in normalized_directory_path.split("/") if fragment]
+    current_path = "/" if normalized_directory_path.startswith("/") else ""
+
+    for fragment in path_fragments:
+        if current_path in ("", "/"):
+            next_path = f"{current_path}{fragment}" if current_path else fragment
+        else:
+            next_path = f"{current_path}/{fragment}"
+
+        if _is_remote_path_exists(sftp_client, next_path):
+            current_path = next_path
+            continue
+
+        try:
+            sftp_client.mkdir(next_path)
+            logger.info("完了: リモートディレクトリを作成しました。パス=%s", next_path)
+        except OSError as exc:
+            if exc.errno != errno.EEXIST:
+                raise
+
+        current_path = next_path
 
 
 # メイン処理
@@ -64,6 +129,7 @@ def upload_report_file_until_success(local_report_file_path: Path) -> str:
 
         try:
             ssh_client, sftp_client = open_sftp_connection()
+            _ensure_remote_directory(sftp_client, sftp_report_constants.REMOTE_REPORT_DIRECTORY)
             sftp_client.put(str(local_report_file_path), remote_report_path)
         except Exception:
             logger.exception(
