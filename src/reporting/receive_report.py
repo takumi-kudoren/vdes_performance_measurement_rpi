@@ -65,7 +65,7 @@ def write_receive_report_jsonl(
     引数:
         rx_tdb_count: 受信したTDBセンテンス数。
         rx_payload_chars_total: 受信したpayload総文字数。
-        received_tdb_sentence_records: 集計対象として採用したTDBセンテンス一覧。
+        received_tdb_sentence_records: 再構築後を含む集計対象として採用したTDBセンテンス一覧。
         report_timestamp_utc: ファイル名へ埋め込むUTC時刻。未指定時は現在UTCを使用する。
 
     戻り値:
