@@ -87,9 +87,11 @@ def run_measurement_cycle(cycle_number: int) -> None:
 
     receive_metrics = collect_receive_metrics_until_next_minute_boundary()
     logger.info(
-        "終了: 受信集計が完了しました。受信TDB数=%d 受信payload総文字数=%d",
+        "終了: 受信集計が完了しました。受信TDB数=%d 受信payload総文字数=%d 分割再構成成功数=%d 分割再構成失敗数=%d",
         receive_metrics.rx_tdb_count,
         receive_metrics.rx_payload_chars_total,
+        receive_metrics.split_reconstruct_success_count,
+        receive_metrics.split_reconstruct_failure_count,
     )
 
     report_timestamp_utc = datetime.now(UTC)
@@ -98,6 +100,8 @@ def run_measurement_cycle(cycle_number: int) -> None:
     report_file_path = write_receive_report_jsonl(
         rx_tdb_count=receive_metrics.rx_tdb_count,
         rx_payload_chars_total=receive_metrics.rx_payload_chars_total,
+        split_reconstruct_success_count=receive_metrics.split_reconstruct_success_count,
+        split_reconstruct_failure_count=receive_metrics.split_reconstruct_failure_count,
         received_tdb_sentence_records=receive_metrics.received_tdb_sentence_records,
         report_timestamp_utc=report_timestamp_utc,
     )

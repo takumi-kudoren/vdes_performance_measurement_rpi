@@ -57,6 +57,8 @@ def _resolve_report_file_path(report_timestamp_utc: datetime) -> Path:
 def write_receive_report_jsonl(
     rx_tdb_count: int,
     rx_payload_chars_total: int,
+    split_reconstruct_success_count: int,
+    split_reconstruct_failure_count: int,
     received_tdb_sentence_records: list[ReceivedTdbSentenceRecord],
     report_timestamp_utc: datetime | None = None,
 ) -> Path:
@@ -65,6 +67,8 @@ def write_receive_report_jsonl(
     引数:
         rx_tdb_count: 受信したTDBセンテンス数。
         rx_payload_chars_total: 受信したpayload総文字数。
+        split_reconstruct_success_count: 分割グループの再構成成功件数。
+        split_reconstruct_failure_count: 分割グループの再構成失敗件数。
         received_tdb_sentence_records: 再構築後を含む集計対象として採用したTDBセンテンス一覧。
         report_timestamp_utc: ファイル名へ埋め込むUTC時刻。未指定時は現在UTCを使用する。
 
@@ -90,6 +94,8 @@ def write_receive_report_jsonl(
         "record_type": "summary",
         "rx_tdb_count": rx_tdb_count,
         "rx_payload_chars_total": rx_payload_chars_total,
+        "split_reconstruct_success_count": split_reconstruct_success_count,
+        "split_reconstruct_failure_count": split_reconstruct_failure_count,
     }
     report_jsonl_lines.append(json.dumps(summary_record, ensure_ascii=False))
 

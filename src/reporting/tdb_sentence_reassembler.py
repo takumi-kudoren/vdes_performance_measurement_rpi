@@ -39,6 +39,29 @@ class TdbSentenceReassembler:
     def __init__(self) -> None:
         self._groups: dict[tuple[int, str, str], _TdbSegmentGroup] = {}
         self._expiry_seconds = 30
+        self._split_reconstruct_success_count: int = 0
+        self._split_reconstruct_failure_count: int = 0
+
+    def get_split_reconstruct_counts(self) -> tuple[int, int]:
+        """分割再構成の成功件数と失敗件数を返す。"""
+        return self._split_reconstruct_success_count, self._split_reconstruct_failure_count
+
+    def finalize_pending_groups_as_boundary_failure(self) -> int:
+        """分境界時点で未完了の分割グループを失敗として確定する。"""
+        pending_group_keys = list(self._groups.keys())
+        for group_key in pending_group_keys:
+            group = self._groups.get(group_key)
+            if group is None:
+                continue
+            LOGGER.warning(
+                "異常: 分境界到達時点で未完了の分割TDBが残っていたため失敗として確定します。total=%s, src=%s, dst=%s",
+                group.total,
+                group.src,
+                group.dst,
+            )
+            self._mark_group_failure(group_key, "分境界失敗")
+
+        return len(pending_group_keys)
 
     def reassemble_sentences(self, sentences: list[str], received_at: datetime) -> list[str]:
         """TDB分割センテンスを再構築し、出力対象のセンテンスを返す。
@@ -83,16 +106,25 @@ class TdbSentenceReassembler:
             try:
                 segment = self._parse_tdb_sentence(normalized_sentence)
             except Exception as exc:
-                group_key = self._try_extract_group_key(normalized_sentence)
-                if group_key is not None:
-                    if group_key in self._groups:
+                group_identity = self._try_extract_group_identity(normalized_sentence)
+                if group_identity is not None:
+                    total, index, src, dst = group_identity
+                    group_key = (total, src, dst)
+                    should_mark_failure = False
+                    if total >= 2:
+                        if index == 1:
+                            should_mark_failure = True
+                        elif group_key in self._groups:
+                            should_mark_failure = True
+
+                    if should_mark_failure:
                         LOGGER.warning(
                             "異常: 解析失敗のため分割TDBを破棄します。total=%s, src=%s, dst=%s",
-                            group_key[0],
-                            group_key[1],
-                            group_key[2],
+                            total,
+                            src,
+                            dst,
                         )
-                    self._groups.pop(group_key, None)
+                        self._mark_group_failure(group_key, "解析失敗")
                 LOGGER.warning(
                     "異常: TDBセンテンスの解析に失敗したため破棄します。sentence=%s, reason=%s",
                     normalized_sentence,
@@ -110,6 +142,20 @@ class TdbSentenceReassembler:
             results.append(reassembled)
 
         return results
+
+    def _mark_group_success(self, group_key: tuple[int, str, str], reason_log_context: str) -> None:
+        """分割グループの成功終端を確定し成功件数を加算する。"""
+        del reason_log_context
+        group = self._groups.pop(group_key, None)
+        if group is None:
+            return
+        self._split_reconstruct_success_count += 1
+
+    def _mark_group_failure(self, group_key: tuple[int, str, str], reason_log_context: str) -> None:
+        """分割グループの失敗終端を確定し失敗件数を加算する。"""
+        del reason_log_context
+        self._groups.pop(group_key, None)
+        self._split_reconstruct_failure_count += 1
 
     @staticmethod
     def _is_tdb_sentence(sentence: str) -> bool:
@@ -180,7 +226,7 @@ class TdbSentenceReassembler:
                 segment.src,
                 segment.dst,
             )
-            self._groups.pop(group_key, None)
+            self._mark_group_failure(group_key, "未完了グループ上書き")
 
         group = self._groups.get(group_key)
         if group is None:
@@ -194,7 +240,7 @@ class TdbSentenceReassembler:
                 segment.src,
                 segment.dst,
             )
-            self._groups.pop(group_key, None)
+            self._mark_group_failure(group_key, "index重複")
             return None
 
         try:
@@ -208,7 +254,7 @@ class TdbSentenceReassembler:
                 segment.dst,
                 exc,
             )
-            self._groups.pop(group_key, None)
+            self._mark_group_failure(group_key, "payload変換失敗")
             return None
 
         group.segments[segment.index] = segment_bits
@@ -218,8 +264,24 @@ class TdbSentenceReassembler:
         if len(group.segments) < group.total:
             return None
 
-        reassembled_sentence = self._build_reassembled_sentence(group)
-        self._groups.pop(group_key, None)
+        try:
+            reassembled_sentence = self._build_reassembled_sentence(group)
+        except Exception as exc:
+            LOGGER.warning(
+                "異常: 分割TDBの再構成結果生成に失敗したため破棄します。total=%s, src=%s, dst=%s, reason=%s",
+                group.total,
+                group.src,
+                group.dst,
+                exc,
+            )
+            self._mark_group_failure(group_key, "再構成結果生成失敗")
+            return None
+
+        if reassembled_sentence is None:
+            self._mark_group_failure(group_key, "再構成結果生成失敗")
+            return None
+
+        self._mark_group_success(group_key, "再構成成功")
         return reassembled_sentence
 
     def _expire_groups(self, received_at: datetime) -> None:
@@ -246,7 +308,7 @@ class TdbSentenceReassembler:
                 expired_keys.append(group_key)
 
         for group_key in expired_keys:
-            group = self._groups.pop(group_key, None)
+            group = self._groups.get(group_key)
             if group is None:
                 continue
             LOGGER.warning(
@@ -256,9 +318,10 @@ class TdbSentenceReassembler:
                 group.dst,
                 self._expiry_seconds,
             )
+            self._mark_group_failure(group_key, "期限切れ")
 
-    def _try_extract_group_key(self, sentence: str) -> tuple[int, str, str] | None:
-        """解析失敗時にグループキーを可能な範囲で抽出する。"""
+    def _try_extract_group_identity(self, sentence: str) -> tuple[int, int | None, str, str] | None:
+        """解析失敗時にグループ識別情報を可能な範囲で抽出する。"""
         if not sentence:
             return None
 
@@ -272,6 +335,13 @@ class TdbSentenceReassembler:
         except Exception:
             return None
 
+        index: int | None = None
+        if len(fields) >= 3:
+            try:
+                index = self._parse_int(fields[2], "index")
+            except Exception:
+                index = None
+
         src = fields[4].strip()
         dst = fields[5].strip()
         if not src or not dst:
@@ -280,7 +350,7 @@ class TdbSentenceReassembler:
         if total < 1:
             return None
 
-        return (total, src, dst)
+        return (total, index, src, dst)
 
     def _payload_to_bits(self, payload: str, fill: int) -> str:
         """AIS 6-bit ASCIIをビット列へ変換する。"""

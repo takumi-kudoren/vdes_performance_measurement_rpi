@@ -45,6 +45,8 @@ class ReceiveMetrics:
     引数:
         rx_tdb_count: 計測期間中に受信したTDB件数。
         rx_payload_chars_total: 計測期間中に受信したpayload総文字数。
+        split_reconstruct_success_count: 分割グループの再構成成功件数。
+        split_reconstruct_failure_count: 分割グループの再構成失敗件数。
         first_tdb_received_utc: 最初の有効TDBを受信したUTC時刻。
         measurement_end_utc: 計測終了のUTC時刻。
         received_tdb_sentence_records: 集計対象として採用したTDBセンテンス一覧。
@@ -58,6 +60,8 @@ class ReceiveMetrics:
 
     rx_tdb_count: int
     rx_payload_chars_total: int
+    split_reconstruct_success_count: int
+    split_reconstruct_failure_count: int
     first_tdb_received_utc: datetime
     measurement_end_utc: datetime
     received_tdb_sentence_records: list[ReceivedTdbSentenceRecord]
@@ -429,14 +433,24 @@ def collect_receive_metrics_until_next_minute_boundary() -> ReceiveMetrics:
     if first_tdb_received_utc is None or measurement_end_utc is None:
         raise RuntimeError("受信集計結果を確定できませんでした。")
 
+    tdb_sentence_reassembler.finalize_pending_groups_as_boundary_failure()
+    split_reconstruct_success_count, split_reconstruct_failure_count = (
+        tdb_sentence_reassembler.get_split_reconstruct_counts()
+    )
+
     logger.info(
-        "終了: UDPマルチキャスト受信処理が完了しました。受信TDB数=%d 受信payload総文字数=%d",
+        "終了: UDPマルチキャスト受信処理が完了しました。受信TDB数=%d 受信payload総文字数=%d "
+        "分割再構成成功数=%d 分割再構成失敗数=%d",
         rx_tdb_count,
         rx_payload_chars_total,
+        split_reconstruct_success_count,
+        split_reconstruct_failure_count,
     )
     return ReceiveMetrics(
         rx_tdb_count=rx_tdb_count,
         rx_payload_chars_total=rx_payload_chars_total,
+        split_reconstruct_success_count=split_reconstruct_success_count,
+        split_reconstruct_failure_count=split_reconstruct_failure_count,
         first_tdb_received_utc=first_tdb_received_utc,
         measurement_end_utc=measurement_end_utc,
         received_tdb_sentence_records=received_tdb_sentence_records,
