@@ -6,25 +6,10 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+from consts import receive_report_constants
 from udp.receive.udp_receiver import ReceivedTdbSentenceRecord
-
-
-# 補助処理
-def _normalize_utc_timestamp(timestamp_utc: datetime) -> datetime:
-    """日時をUTCへ正規化する。
-
-    引数:
-        timestamp_utc: UTCとして扱う日時。
-
-    戻り値:
-        UTCへ正規化した日時。
-
-    例外:
-        なし。
-    """
-    if timestamp_utc.tzinfo is None:
-        return timestamp_utc.replace(tzinfo=UTC)
-    return timestamp_utc.astimezone(UTC)
+from utils.datetime_utils import normalize_utc_datetime
+from utils.path_utils import get_project_root
 
 
 # 補助処理
@@ -43,13 +28,13 @@ def _resolve_report_file_path(report_timestamp_utc: datetime) -> Path:
     補足:
         保存先は`<project_root>/report`で固定する。
     """
-    normalized_utc = _normalize_utc_timestamp(report_timestamp_utc)
+    normalized_utc = normalize_utc_datetime(report_timestamp_utc)
 
-    project_root = Path(__file__).resolve().parent.parent.parent
-    report_directory = project_root / "report"
+    project_root = get_project_root()
+    report_directory = project_root / receive_report_constants.REPORT_DIRECTORY_NAME
     report_directory.mkdir(parents=True, exist_ok=True)
 
-    report_file_name = normalized_utc.strftime("REPORT_%Y%m%d_%H%M%S.jsonl")
+    report_file_name = normalized_utc.strftime(receive_report_constants.REPORT_FILE_NAME_FORMAT)
     return report_directory / report_file_name
 
 
@@ -85,13 +70,13 @@ def write_receive_report_jsonl(
     if report_timestamp_utc is None:
         output_timestamp_utc = datetime.now(UTC)
     else:
-        output_timestamp_utc = _normalize_utc_timestamp(report_timestamp_utc)
+        output_timestamp_utc = normalize_utc_datetime(report_timestamp_utc)
 
     report_file_path = _resolve_report_file_path(output_timestamp_utc)
     report_jsonl_lines: list[str] = []
 
     summary_record = {
-        "record_type": "summary",
+        "record_type": receive_report_constants.SUMMARY_RECORD_TYPE,
         "rx_tdb_count": rx_tdb_count,
         "rx_payload_chars_total": rx_payload_chars_total,
         "split_reconstruct_success_count": split_reconstruct_success_count,
@@ -101,13 +86,17 @@ def write_receive_report_jsonl(
 
     for sentence_record in received_tdb_sentence_records:
         sentence_detail_record = {
-            "record_type": "sentence",
+            "record_type": receive_report_constants.SENTENCE_RECORD_TYPE,
             "sentence_received_utc": _format_utc_text(sentence_record.received_utc),
             "tdb_sentence": sentence_record.tdb_sentence,
         }
         report_jsonl_lines.append(json.dumps(sentence_detail_record, ensure_ascii=False))
 
-    report_file_path.write_text("\n".join(report_jsonl_lines) + "\n", encoding="utf-8")
+    report_file_path.write_text(
+        receive_report_constants.JSONL_LINE_SEPARATOR.join(report_jsonl_lines)
+        + receive_report_constants.JSONL_LINE_SEPARATOR,
+        encoding=receive_report_constants.JSONL_ENCODING,
+    )
     return report_file_path
 
 
@@ -124,5 +113,7 @@ def _format_utc_text(timestamp_utc: datetime) -> str:
     例外:
         なし。
     """
-    normalized_utc = _normalize_utc_timestamp(timestamp_utc)
-    return normalized_utc.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    normalized_utc = normalize_utc_datetime(timestamp_utc)
+    return normalized_utc.isoformat(timespec=receive_report_constants.UTC_TEXT_TIMESPEC).replace(
+        receive_report_constants.UTC_OFFSET_TEXT, receive_report_constants.UTC_SUFFIX_TEXT
+    )

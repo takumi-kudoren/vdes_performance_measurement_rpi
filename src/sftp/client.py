@@ -5,7 +5,7 @@ from pathlib import Path
 
 import paramiko
 
-from consts import sftp_constants
+from consts import sftp_client_constants, sftp_constants
 
 LOGGER = logging.getLogger(__name__)
 
@@ -134,7 +134,10 @@ def validate_sftp_config() -> None:
     if not sftp_constants.HOST:
         raise ValueError("SFTP接続先のホストが未指定です。")
 
-    if sftp_constants.PORT <= 0 or sftp_constants.PORT > 65535:
+    if (
+        sftp_constants.PORT < sftp_client_constants.NETWORK_PORT_MIN
+        or sftp_constants.PORT > sftp_client_constants.NETWORK_PORT_MAX
+    ):
         raise ValueError(f"SFTP接続先のポートが範囲外です。port={sftp_constants.PORT}")
 
     if not sftp_constants.USERNAME:
@@ -162,7 +165,7 @@ def resolve_private_key_path(private_key_path: str) -> Path:
     """
     expanded_path = Path(private_key_path).expanduser()
 
-    if expanded_path.suffix.lower() == ".ppk":
+    if expanded_path.suffix.lower() == sftp_client_constants.UNSUPPORTED_PRIVATE_KEY_SUFFIX:
         raise ValueError("PPK形式の秘密鍵には未対応です。OpenSSH形式の鍵を指定してください。")
 
     if not expanded_path.exists():

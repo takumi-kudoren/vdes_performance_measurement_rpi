@@ -1,0 +1,5 @@
+"""SFTPクライアント処理に関する定数を定義する。"""
+
+NETWORK_PORT_MIN = 1
+NETWORK_PORT_MAX = 65535
+UNSUPPORTED_PRIVATE_KEY_SUFFIX = ".ppk"

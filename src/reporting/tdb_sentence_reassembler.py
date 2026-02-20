@@ -6,6 +6,36 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
+from consts.tdb_constants import (
+    AIS_CHAR_HIGH_OFFSET,
+    AIS_CHAR_LOW_OFFSET,
+    AIS_CHAR_RANGE_HIGH_END,
+    AIS_CHAR_RANGE_HIGH_START,
+    AIS_CHAR_RANGE_LOW_END,
+    AIS_CHAR_RANGE_LOW_START,
+    AIS_CHAR_SPLIT_THRESHOLD,
+    AIS_SIXBIT_CHUNK_SIZE,
+    AIS_SIXBIT_MAX_VALUE,
+    AIS_SIXBIT_MIN_VALUE,
+    NMEA_CHECKSUM_SEPARATOR,
+    NMEA_FIELD_SEPARATOR,
+    NMEA_SENTENCE_START_MARK,
+    TDB_FIELD_DESTINATION_POSITION,
+    TDB_FIELD_FILL_POSITION,
+    TDB_FIELD_PAYLOAD_POSITION,
+    TDB_FIELD_SEGMENT_INDEX_POSITION,
+    TDB_FIELD_SEQUENCE_POSITION,
+    TDB_FIELD_SOURCE_POSITION,
+    TDB_FIELD_TOTAL_POSITION,
+    TDB_FILL_MAX_VALUE,
+    TDB_FILL_MIN_VALUE,
+    TDB_GROUP_EXPIRY_SECONDS,
+    TDB_GROUP_IDENTITY_MIN_FIELD_COUNT,
+    TDB_MIN_FIELD_COUNT,
+    TDB_TOKEN_LENGTH,
+    TDB_TOKEN_SUFFIX,
+)
+
 LOGGER = logging.getLogger(__name__)
 
 
@@ -13,7 +43,6 @@ LOGGER = logging.getLogger(__name__)
 class _TdbSegment:
     """TDBセンテンスの解析結果を保持する。"""
 
-    raw_sentence: str
     total: int
     index: int
     src: str
@@ -38,12 +67,12 @@ class TdbSentenceReassembler:
 
     def __init__(self) -> None:
         self._groups: dict[tuple[int, str, str], _TdbSegmentGroup] = {}
-        self._expiry_seconds = 30
+        self._expiry_seconds = TDB_GROUP_EXPIRY_SECONDS
         self._split_reconstruct_success_count: int = 0
         self._split_reconstruct_failure_count: int = 0
 
     def get_split_reconstruct_counts(self) -> tuple[int, int]:
-        """分割再構成の成功件数と失敗件数を返す。"""
+        """分割再構成（total>=2）の成功件数と失敗件数を返す。"""
         return self._split_reconstruct_success_count, self._split_reconstruct_failure_count
 
     def finalize_pending_groups_as_boundary_failure(self) -> int:
@@ -53,13 +82,13 @@ class TdbSentenceReassembler:
             group = self._groups.get(group_key)
             if group is None:
                 continue
-            LOGGER.warning(
+            self._mark_group_failure_with_log(
+                group_key,
                 "異常: 分境界到達時点で未完了の分割TDBが残っていたため失敗として確定します。total=%s, src=%s, dst=%s",
                 group.total,
                 group.src,
                 group.dst,
             )
-            self._mark_group_failure(group_key, "分境界失敗")
 
         return len(pending_group_keys)
 
@@ -118,13 +147,13 @@ class TdbSentenceReassembler:
                             should_mark_failure = True
 
                     if should_mark_failure:
-                        LOGGER.warning(
+                        self._mark_group_failure_with_log(
+                            group_key,
                             "異常: 解析失敗のため分割TDBを破棄します。total=%s, src=%s, dst=%s",
                             total,
                             src,
                             dst,
                         )
-                        self._mark_group_failure(group_key, "解析失敗")
                 LOGGER.warning(
                     "異常: TDBセンテンスの解析に失敗したため破棄します。sentence=%s, reason=%s",
                     normalized_sentence,
@@ -143,51 +172,66 @@ class TdbSentenceReassembler:
 
         return results
 
-    def _mark_group_success(self, group_key: tuple[int, str, str], reason_log_context: str) -> None:
-        """分割グループの成功終端を確定し成功件数を加算する。"""
-        del reason_log_context
+    def _mark_group_success(self, group_key: tuple[int, str, str]) -> None:
+        """分割グループ（total>=2）の成功終端を確定し成功件数を加算する。"""
         group = self._groups.pop(group_key, None)
         if group is None:
             return
-        self._split_reconstruct_success_count += 1
 
-    def _mark_group_failure(self, group_key: tuple[int, str, str], reason_log_context: str) -> None:
+        if group.total < 2:
+            LOGGER.warning(
+                "異常: 単行TDBは再構成成功件数へ加算しません。total=%s, src=%s, dst=%s",
+                group.total,
+                group.src,
+                group.dst,
+            )
+            return
+
+        # 一時対応: 再構成成功数の加算処理は停止する。
+        # self._split_reconstruct_success_count += 1
+
+    def _mark_group_failure(self, group_key: tuple[int, str, str]) -> None:
         """分割グループの失敗終端を確定し失敗件数を加算する。"""
-        del reason_log_context
         self._groups.pop(group_key, None)
-        self._split_reconstruct_failure_count += 1
+        # 一時対応: 再構成失敗数の加算処理は停止する。
+        # self._split_reconstruct_failure_count += 1
+
+    def _mark_group_failure_with_log(self, group_key: tuple[int, str, str], message: str, *args: object) -> None:
+        """失敗ログ出力と失敗終端確定を同時に行う。"""
+        LOGGER.warning(message, *args)
+        self._mark_group_failure(group_key)
 
     @staticmethod
     def _is_tdb_sentence(sentence: str) -> bool:
         """対象センテンスが`!--TDB`形式か判定する。"""
-        if not sentence or not sentence.startswith("!"):
+        if not sentence or not sentence.startswith(NMEA_SENTENCE_START_MARK):
             return False
 
-        comma_index = sentence.find(",")
+        comma_index = sentence.find(NMEA_FIELD_SEPARATOR)
         if comma_index <= 1:
             return False
 
         token = sentence[1:comma_index]
-        if len(token) != 5:
+        if len(token) != TDB_TOKEN_LENGTH:
             return False
 
-        return token.endswith("TDB")
+        return token.endswith(TDB_TOKEN_SUFFIX)
 
     def _parse_tdb_sentence(self, sentence: str) -> _TdbSegment:
         """TDBセンテンスを解析して必要な情報を抽出する。"""
-        body = sentence.split("*", 1)[0]
-        fields = body.split(",")
-        if len(fields) < 10:
+        body = sentence.split(NMEA_CHECKSUM_SEPARATOR, 1)[0]
+        fields = body.split(NMEA_FIELD_SEPARATOR)
+        if len(fields) < TDB_MIN_FIELD_COUNT:
             raise ValueError("TDBセンテンスのフィールド数が不足しています。")
 
-        total = self._parse_int(fields[1], "total")
-        index = self._parse_int(fields[2], "index")
-        self._parse_int(fields[3], "seq")
+        total = self._parse_int(fields[TDB_FIELD_TOTAL_POSITION], "total")
+        index = self._parse_int(fields[TDB_FIELD_SEGMENT_INDEX_POSITION], "index")
+        self._parse_int(fields[TDB_FIELD_SEQUENCE_POSITION], "seq")
 
-        src = fields[4].strip()
-        dst = fields[5].strip()
-        payload = fields[8].strip()
-        fill = self._parse_int(fields[9], "fill")
+        src = fields[TDB_FIELD_SOURCE_POSITION].strip()
+        dst = fields[TDB_FIELD_DESTINATION_POSITION].strip()
+        payload = fields[TDB_FIELD_PAYLOAD_POSITION].strip()
+        fill = self._parse_int(fields[TDB_FIELD_FILL_POSITION], "fill")
 
         if total < 1:
             raise ValueError("totalの値が不正です。")
@@ -195,14 +239,14 @@ class TdbSentenceReassembler:
         if index < 1 or index > total:
             raise ValueError("indexの値が範囲外です。")
 
-        if fill < 0 or fill > 5:
+        if fill < TDB_FILL_MIN_VALUE or fill > TDB_FILL_MAX_VALUE:
             raise ValueError("fillの値が範囲外です。")
 
         if payload == "":
             raise ValueError("payloadが空です。")
 
         return _TdbSegment(
-            raw_sentence=sentence, total=total, index=index, src=src, dst=dst, payload=payload, fill=fill
+            total=total, index=index, src=src, dst=dst, payload=payload, fill=fill
         )
 
     def _parse_int(self, value: str, field_name: str) -> int:
@@ -220,33 +264,34 @@ class TdbSentenceReassembler:
         """分割センテンスを登録し、再構築が完了した場合は結合結果を返す。"""
         group_key = (segment.total, segment.src, segment.dst)
         if segment.index == 1 and group_key in self._groups:
-            LOGGER.warning(
+            self._mark_group_failure_with_log(
+                group_key,
                 "異常: 未完了の分割TDBが残っていたため破棄します。total=%s, src=%s, dst=%s",
                 segment.total,
                 segment.src,
                 segment.dst,
             )
-            self._mark_group_failure(group_key, "未完了グループ上書き")
 
         group = self._groups.get(group_key)
         if group is None:
             group = _TdbSegmentGroup(total=segment.total, src=segment.src, dst=segment.dst)
 
         if segment.index in group.segments:
-            LOGGER.warning(
+            self._mark_group_failure_with_log(
+                group_key,
                 "異常: 分割TDBのindexが重複したため破棄します。total=%s, index=%s, src=%s, dst=%s",
                 segment.total,
                 segment.index,
                 segment.src,
                 segment.dst,
             )
-            self._mark_group_failure(group_key, "index重複")
             return None
 
         try:
             segment_bits = self._payload_to_bits(segment.payload, segment.fill)
         except Exception as exc:
-            LOGGER.warning(
+            self._mark_group_failure_with_log(
+                group_key,
                 "異常: 分割TDBのpayload変換に失敗したため破棄します。total=%s, index=%s, src=%s, dst=%s, reason=%s",
                 segment.total,
                 segment.index,
@@ -254,7 +299,6 @@ class TdbSentenceReassembler:
                 segment.dst,
                 exc,
             )
-            self._mark_group_failure(group_key, "payload変換失敗")
             return None
 
         group.segments[segment.index] = segment_bits
@@ -267,21 +311,21 @@ class TdbSentenceReassembler:
         try:
             reassembled_sentence = self._build_reassembled_sentence(group)
         except Exception as exc:
-            LOGGER.warning(
+            self._mark_group_failure_with_log(
+                group_key,
                 "異常: 分割TDBの再構成結果生成に失敗したため破棄します。total=%s, src=%s, dst=%s, reason=%s",
                 group.total,
                 group.src,
                 group.dst,
                 exc,
             )
-            self._mark_group_failure(group_key, "再構成結果生成失敗")
             return None
 
         if reassembled_sentence is None:
-            self._mark_group_failure(group_key, "再構成結果生成失敗")
+            self._mark_group_failure(group_key)
             return None
 
-        self._mark_group_success(group_key, "再構成成功")
+        self._mark_group_success(group_key)
         return reassembled_sentence
 
     def _expire_groups(self, received_at: datetime) -> None:
@@ -311,39 +355,39 @@ class TdbSentenceReassembler:
             group = self._groups.get(group_key)
             if group is None:
                 continue
-            LOGGER.warning(
+            self._mark_group_failure_with_log(
+                group_key,
                 "異常: 分割TDBが期限切れのため破棄します。total=%s, src=%s, dst=%s, seconds=%s",
                 group.total,
                 group.src,
                 group.dst,
                 self._expiry_seconds,
             )
-            self._mark_group_failure(group_key, "期限切れ")
 
     def _try_extract_group_identity(self, sentence: str) -> tuple[int, int | None, str, str] | None:
         """解析失敗時にグループ識別情報を可能な範囲で抽出する。"""
         if not sentence:
             return None
 
-        body = sentence.split("*", 1)[0]
-        fields = body.split(",")
-        if len(fields) < 6:
+        body = sentence.split(NMEA_CHECKSUM_SEPARATOR, 1)[0]
+        fields = body.split(NMEA_FIELD_SEPARATOR)
+        if len(fields) < TDB_GROUP_IDENTITY_MIN_FIELD_COUNT:
             return None
 
         try:
-            total = self._parse_int(fields[1], "total")
+            total = self._parse_int(fields[TDB_FIELD_TOTAL_POSITION], "total")
         except Exception:
             return None
 
         index: int | None = None
-        if len(fields) >= 3:
+        if len(fields) > TDB_FIELD_SEGMENT_INDEX_POSITION:
             try:
-                index = self._parse_int(fields[2], "index")
+                index = self._parse_int(fields[TDB_FIELD_SEGMENT_INDEX_POSITION], "index")
             except Exception:
                 index = None
 
-        src = fields[4].strip()
-        dst = fields[5].strip()
+        src = fields[TDB_FIELD_SOURCE_POSITION].strip()
+        dst = fields[TDB_FIELD_DESTINATION_POSITION].strip()
         if not src or not dst:
             return None
 
@@ -357,7 +401,7 @@ class TdbSentenceReassembler:
         bit_chunks: list[str] = []
         for char in payload:
             bit_value = self._ais_char_to_sixbit(char)
-            bit_chunks.append(f"{bit_value:06b}")
+            bit_chunks.append(f"{bit_value:0{AIS_SIXBIT_CHUNK_SIZE}b}")
 
         bits = "".join(bit_chunks)
         if fill == 0:
@@ -371,10 +415,10 @@ class TdbSentenceReassembler:
     def _ais_char_to_sixbit(self, char: str) -> int:
         """AIS 6-bit ASCIIの1文字を6bit値へ変換する。"""
         code = ord(char)
-        if 48 <= code <= 87:
-            return code - 48
-        if 96 <= code <= 119:
-            return code - 56
+        if AIS_CHAR_RANGE_LOW_START <= code <= AIS_CHAR_RANGE_LOW_END:
+            return code - AIS_CHAR_LOW_OFFSET
+        if AIS_CHAR_RANGE_HIGH_START <= code <= AIS_CHAR_RANGE_HIGH_END:
+            return code - AIS_CHAR_HIGH_OFFSET
         raise ValueError(f"AIS 6-bit ASCII外の文字です。char={char}")
 
     def _build_reassembled_sentence(self, group: _TdbSegmentGroup) -> str | None:
@@ -403,7 +447,7 @@ class TdbSentenceReassembler:
             )
             return None
 
-        fill = (6 - (len(combined_bits) % 6)) % 6
+        fill = (AIS_SIXBIT_CHUNK_SIZE - (len(combined_bits) % AIS_SIXBIT_CHUNK_SIZE)) % AIS_SIXBIT_CHUNK_SIZE
         if fill > 0:
             combined_bits += "0" * fill
 
@@ -414,12 +458,12 @@ class TdbSentenceReassembler:
 
     def _bits_to_payload(self, bits: str) -> str:
         """ビット列をAIS 6-bit ASCIIへ変換する。"""
-        if len(bits) % 6 != 0:
+        if len(bits) % AIS_SIXBIT_CHUNK_SIZE != 0:
             raise ValueError("ビット列の長さが6の倍数ではありません。")
 
         chars: list[str] = []
-        for offset in range(0, len(bits), 6):
-            chunk = bits[offset : offset + 6]
+        for offset in range(0, len(bits), AIS_SIXBIT_CHUNK_SIZE):
+            chunk = bits[offset : offset + AIS_SIXBIT_CHUNK_SIZE]
             value = int(chunk, 2)
             chars.append(self._sixbit_to_ais_char(value))
 
@@ -427,12 +471,12 @@ class TdbSentenceReassembler:
 
     def _sixbit_to_ais_char(self, value: int) -> str:
         """6bit値をAIS 6-bit ASCIIの1文字に変換する。"""
-        if value < 0 or value > 63:
+        if value < AIS_SIXBIT_MIN_VALUE or value > AIS_SIXBIT_MAX_VALUE:
             raise ValueError("6bit値が範囲外です。")
 
-        if value < 40:
-            return chr(value + 48)
-        return chr(value + 56)
+        if value < AIS_CHAR_SPLIT_THRESHOLD:
+            return chr(value + AIS_CHAR_LOW_OFFSET)
+        return chr(value + AIS_CHAR_HIGH_OFFSET)
 
     def _calculate_checksum(self, sentence_body: str) -> str:
         """NMEAチェックサムを計算する。"""

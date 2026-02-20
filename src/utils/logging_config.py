@@ -7,9 +7,8 @@ from logging.handlers import QueueHandler
 from multiprocessing import queues
 from pathlib import Path
 
-LOG_FILE_NAME = "vdes_performance_measurement_rpi.log"
-LOG_OUTPUT_FORMAT = "%(asctime)s %(processName)s %(levelname)s %(name)s - %(message)s"
-LOG_QUEUE_STOP_SIGNAL = None
+from consts.logging_constants import LOG_FILE_NAME, LOG_OUTPUT_FORMAT, LOG_QUEUE_STOP_SIGNAL
+from utils.path_utils import get_project_root
 
 
 # 補助処理
@@ -28,7 +27,7 @@ def _get_log_file_path() -> Path:
     補足:
         実行環境差異を減らすため、プロジェクトルート基準で出力先を決定する。
     """
-    project_root = Path(__file__).resolve().parent.parent.parent
+    project_root = get_project_root()
     logs_directory = project_root / "logs"
     logs_directory.mkdir(parents=True, exist_ok=True)
     return logs_directory / LOG_FILE_NAME

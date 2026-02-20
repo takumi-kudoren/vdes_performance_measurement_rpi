@@ -9,7 +9,7 @@ from pathlib import Path
 
 import paramiko
 
-from consts import sftp_report_constants
+from consts import sftp_report_constants, sftp_uploader_constants
 from sftp.client import close_sftp_connection, open_sftp_connection
 
 logger = logging.getLogger(__name__)
@@ -29,7 +29,10 @@ def _join_remote_path(directory_path: str, file_name: str) -> str:
     例外:
         なし。
     """
-    return f"{directory_path.rstrip('/')}/{file_name}"
+    normalized_directory_path = directory_path.rstrip(sftp_uploader_constants.REMOTE_PATH_SEPARATOR)
+    return (
+        f"{normalized_directory_path}{sftp_uploader_constants.REMOTE_PATH_SEPARATOR}{file_name}"
+    )
 
 
 def _is_remote_path_exists(sftp_client: paramiko.SFTPClient, remote_path: str) -> bool:
@@ -69,18 +72,32 @@ def _ensure_remote_directory(sftp_client: paramiko.SFTPClient, directory_path: s
     例外:
         OSError: ディレクトリ作成に失敗した場合。
     """
-    normalized_directory_path = directory_path.rstrip("/")
-    if not normalized_directory_path or normalized_directory_path == "/":
+    normalized_directory_path = directory_path.rstrip(sftp_uploader_constants.REMOTE_PATH_SEPARATOR)
+    if (
+        not normalized_directory_path
+        or normalized_directory_path == sftp_uploader_constants.REMOTE_ROOT_PATH
+    ):
         return
 
-    path_fragments = [fragment for fragment in normalized_directory_path.split("/") if fragment]
-    current_path = "/" if normalized_directory_path.startswith("/") else ""
+    path_fragments = [
+        fragment
+        for fragment in normalized_directory_path.split(sftp_uploader_constants.REMOTE_PATH_SEPARATOR)
+        if fragment
+    ]
+    current_path = (
+        sftp_uploader_constants.REMOTE_ROOT_PATH
+        if normalized_directory_path.startswith(sftp_uploader_constants.REMOTE_PATH_SEPARATOR)
+        else sftp_uploader_constants.REMOTE_EMPTY_PATH
+    )
 
     for fragment in path_fragments:
-        if current_path in ("", "/"):
+        if current_path in (
+            sftp_uploader_constants.REMOTE_EMPTY_PATH,
+            sftp_uploader_constants.REMOTE_ROOT_PATH,
+        ):
             next_path = f"{current_path}{fragment}" if current_path else fragment
         else:
-            next_path = f"{current_path}/{fragment}"
+            next_path = f"{current_path}{sftp_uploader_constants.REMOTE_PATH_SEPARATOR}{fragment}"
 
         if _is_remote_path_exists(sftp_client, next_path):
             current_path = next_path

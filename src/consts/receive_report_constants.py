@@ -1,0 +1,14 @@
+"""受信レポート出力に関する定数を定義する。"""
+
+REPORT_DIRECTORY_NAME = "report"
+REPORT_FILE_NAME_FORMAT = "REPORT_%Y%m%d_%H%M%S.jsonl"
+
+SUMMARY_RECORD_TYPE = "summary"
+SENTENCE_RECORD_TYPE = "sentence"
+
+UTC_TEXT_TIMESPEC = "milliseconds"
+UTC_OFFSET_TEXT = "+00:00"
+UTC_SUFFIX_TEXT = "Z"
+
+JSONL_LINE_SEPARATOR = "\n"
+JSONL_ENCODING = "utf-8"

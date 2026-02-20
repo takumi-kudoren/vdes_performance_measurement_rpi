@@ -4,17 +4,28 @@ from __future__ import annotations
 
 import logging
 import socket
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from consts.receive_constants import (
     RECEIVE_BIND_IP,
     RECEIVE_BUFFER_SIZE,
+    RECEIVE_INTERFACE_IP,
     RECEIVE_MULTICAST_IP,
     RECEIVE_PORT,
     RECEIVE_SOCKET_TIMEOUT_SECONDS,
 )
+from consts.tdb_constants import (
+    NMEA_CHECKSUM_SEPARATOR,
+    NMEA_FIELD_SEPARATOR,
+    NMEA_SENTENCE_START_MARK,
+    TDB_FIELD_PAYLOAD_POSITION,
+    TDB_TOKEN_LENGTH,
+    TDB_TOKEN_SUFFIX,
+)
+from consts.udp_receiver_constants import UDP_DECODE_ENCODING, UDP_DECODE_ERROR_MODE, UTC_LOG_TEXT_FORMAT
 from reporting.tdb_sentence_reassembler import TdbSentenceReassembler
+from utils.datetime_utils import normalize_utc_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +78,18 @@ class ReceiveMetrics:
     received_tdb_sentence_records: list[ReceivedTdbSentenceRecord]
 
 
+@dataclass
+class _ReceiveAggregationState:
+    """受信ループ中に更新する集計状態を保持する。"""
+
+    rx_tdb_count: int = 0
+    rx_payload_chars_total: int = 0
+    first_tdb_received_utc: datetime | None = None
+    measurement_end_utc: datetime | None = None
+    received_tdb_sentence_records: list[ReceivedTdbSentenceRecord] = field(default_factory=list)
+    tdb_sentence_reassembler: TdbSentenceReassembler = field(default_factory=TdbSentenceReassembler)
+
+
 # 補助処理
 def _build_membership_request() -> bytes:
     """マルチキャスト参加に使用するパケットを組み立てる。
@@ -81,8 +104,14 @@ def _build_membership_request() -> bytes:
         OSError: IPアドレス変換に失敗した場合。
     """
     multicast_group = socket.inet_aton(RECEIVE_MULTICAST_IP)
-    interface_address = socket.inet_aton("0.0.0.0")
+    interface_address = socket.inet_aton(RECEIVE_INTERFACE_IP)
     return multicast_group + interface_address
+
+
+# 補助処理
+def _current_utc() -> datetime:
+    """現在のUTC時刻を返す。"""
+    return datetime.now(UTC)
 
 
 # 補助処理
@@ -98,12 +127,8 @@ def _format_utc_log_text(timestamp_utc: datetime) -> str:
     例外:
         なし。
     """
-    if timestamp_utc.tzinfo is None:
-        normalized_utc = timestamp_utc.replace(tzinfo=UTC)
-    else:
-        normalized_utc = timestamp_utc.astimezone(UTC)
-
-    return normalized_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+    normalized_utc = normalize_utc_datetime(timestamp_utc)
+    return normalized_utc.strftime(UTC_LOG_TEXT_FORMAT)
 
 
 # 補助処理
@@ -119,11 +144,7 @@ def _resolve_next_minute_boundary_utc(timestamp_utc: datetime) -> datetime:
     例外:
         なし。
     """
-    if timestamp_utc.tzinfo is None:
-        normalized_utc = timestamp_utc.replace(tzinfo=UTC)
-    else:
-        normalized_utc = timestamp_utc.astimezone(UTC)
-
+    normalized_utc = normalize_utc_datetime(timestamp_utc)
     current_minute_floor_utc = normalized_utc.replace(second=0, microsecond=0)
     return current_minute_floor_utc + timedelta(minutes=1)
 
@@ -142,7 +163,7 @@ def _is_tdb_sentence_token(token: str) -> bool:
         なし。
     """
     normalized_token = token.strip()
-    return len(normalized_token) == 5 and normalized_token.endswith("TDB")
+    return len(normalized_token) == TDB_TOKEN_LENGTH and normalized_token.endswith(TDB_TOKEN_SUFFIX)
 
 
 # 補助処理
@@ -163,9 +184,9 @@ def _extract_target_tdb_sentences(received_text: str) -> list[str]:
     """
     target_sentences: list[str] = []
     for raw_line in received_text.splitlines():
-        sentence_start_index = raw_line.find("!")
+        sentence_start_index = raw_line.find(NMEA_SENTENCE_START_MARK)
         while sentence_start_index >= 0:
-            comma_index = raw_line.find(",", sentence_start_index)
+            comma_index = raw_line.find(NMEA_FIELD_SEPARATOR, sentence_start_index)
             if comma_index < 0:
                 break
 
@@ -176,7 +197,7 @@ def _extract_target_tdb_sentences(received_text: str) -> list[str]:
                     target_sentences.append(tdb_sentence)
                 break
 
-            sentence_start_index = raw_line.find("!", sentence_start_index + 1)
+            sentence_start_index = raw_line.find(NMEA_SENTENCE_START_MARK, sentence_start_index + 1)
 
     return target_sentences
 
@@ -197,17 +218,16 @@ def _extract_payload_char_count(tdb_sentence: str) -> int | None:
     補足:
         payloadは`*`より前の9項目目（index=8）を採用する。
     """
-    sentence_body = tdb_sentence.split("*", 1)[0]
-    sentence_fields = sentence_body.split(",")
-    payload_index = 8
+    sentence_body = tdb_sentence.split(NMEA_CHECKSUM_SEPARATOR, 1)[0]
+    sentence_fields = sentence_body.split(NMEA_FIELD_SEPARATOR)
 
-    if len(sentence_fields) <= payload_index:
+    if len(sentence_fields) <= TDB_FIELD_PAYLOAD_POSITION:
         logger.warning(
             "異常: TDBセンテンスの項目数が不足しているため集計対象から除外しました。受信データ=%s", tdb_sentence
         )
         return None
 
-    return len(sentence_fields[payload_index])
+    return len(sentence_fields[TDB_FIELD_PAYLOAD_POSITION])
 
 
 # 補助処理
@@ -308,6 +328,173 @@ def _accumulate_reassembled_sentences(
     return rx_tdb_count, rx_payload_chars_total
 
 
+# 補助処理
+def _initialize_udp_socket() -> tuple[socket.socket, bytes]:
+    """UDP受信ソケットを初期化し、参加要求パケットと併せて返す。"""
+    membership_request = b""
+    udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    try:
+        udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        udp_socket.bind((RECEIVE_BIND_IP, RECEIVE_PORT))
+        membership_request = _build_membership_request()
+        udp_socket.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, membership_request)
+        udp_socket.settimeout(RECEIVE_SOCKET_TIMEOUT_SECONDS)
+    except OSError:
+        udp_socket.close()
+        logger.exception(
+            "異常: UDP受信ソケットの初期化に失敗しました。待受=%s:%s グループ=%s",
+            RECEIVE_BIND_IP,
+            RECEIVE_PORT,
+            RECEIVE_MULTICAST_IP,
+        )
+        raise
+
+    return udp_socket, membership_request
+
+
+# 補助処理
+def _is_measurement_end_reached(measurement_end_utc: datetime | None, current_utc: datetime) -> bool:
+    """計測終了時刻へ到達したか判定する。"""
+    if measurement_end_utc is None:
+        return False
+    return current_utc >= measurement_end_utc
+
+
+# 補助処理
+def _receive_datagram(udp_socket: socket.socket) -> tuple[bytes, tuple[str, int]] | None:
+    """1データグラム受信を行い、受信失敗時はNoneを返す。"""
+    try:
+        return udp_socket.recvfrom(RECEIVE_BUFFER_SIZE)
+    except TimeoutError:
+        return None
+    except OSError:
+        logger.exception("異常: UDP受信に失敗しました。待受=%s:%s", RECEIVE_BIND_IP, RECEIVE_PORT)
+        return None
+
+
+# 補助処理
+def _process_target_tdb_sentence(tdb_sentence: str, state: _ReceiveAggregationState) -> bool:
+    """1件のTDBセンテンスを処理し、計測終了時はTrueを返す。"""
+    sentence_received_utc = _current_utc()
+    if _is_measurement_end_reached(state.measurement_end_utc, sentence_received_utc):
+        logger.info(
+            "終了: 計測終了時刻到達後のデータを検知したため受信集計を終了します。終了時刻=%s",
+            _format_utc_log_text(state.measurement_end_utc),
+        )
+        return True
+
+    state.first_tdb_received_utc, state.measurement_end_utc = _start_measurement_window_if_needed(
+        first_tdb_received_utc=state.first_tdb_received_utc,
+        measurement_end_utc=state.measurement_end_utc,
+        sentence_received_utc=sentence_received_utc,
+    )
+
+    reassembled_sentences = _reassemble_target_tdb_sentence(
+        tdb_sentence=tdb_sentence,
+        sentence_received_utc=sentence_received_utc,
+        tdb_sentence_reassembler=state.tdb_sentence_reassembler,
+    )
+    if not reassembled_sentences:
+        return False
+
+    state.rx_tdb_count, state.rx_payload_chars_total = _accumulate_reassembled_sentences(
+        reassembled_sentences=reassembled_sentences,
+        sentence_received_utc=sentence_received_utc,
+        rx_tdb_count=state.rx_tdb_count,
+        rx_payload_chars_total=state.rx_payload_chars_total,
+        received_tdb_sentence_records=state.received_tdb_sentence_records,
+    )
+    return False
+
+
+# 補助処理
+def _process_received_datagram(
+    received_data: bytes, sender_address: tuple[str, int], state: _ReceiveAggregationState
+) -> bool:
+    """1データグラムを処理し、計測終了時はTrueを返す。"""
+    received_text = received_data.decode(UDP_DECODE_ENCODING, errors=UDP_DECODE_ERROR_MODE)
+    target_sentences = _extract_target_tdb_sentences(received_text)
+    if not target_sentences:
+        return False
+
+    logger.info(
+        "開始: TDB候補データを受信しました。送信元=%s:%s 件数=%d",
+        sender_address[0],
+        sender_address[1],
+        len(target_sentences),
+    )
+
+    for tdb_sentence in target_sentences:
+        should_stop = _process_target_tdb_sentence(tdb_sentence, state)
+        if should_stop:
+            return True
+    return False
+
+
+# 補助処理
+def _run_receive_loop(udp_socket: socket.socket, state: _ReceiveAggregationState) -> None:
+    """受信ループを実行し、終了条件に到達するまで処理を継続する。"""
+    while True:
+        current_utc = _current_utc()
+        if _is_measurement_end_reached(state.measurement_end_utc, current_utc):
+            logger.info(
+                "終了: 計測終了時刻に到達したため受信集計を終了します。終了時刻=%s",
+                _format_utc_log_text(state.measurement_end_utc),
+            )
+            return
+
+        received_packet = _receive_datagram(udp_socket)
+        if received_packet is None:
+            continue
+
+        received_data, sender_address = received_packet
+        should_stop = _process_received_datagram(received_data, sender_address, state)
+        if should_stop:
+            return
+
+
+# 補助処理
+def _leave_multicast_group_if_needed(udp_socket: socket.socket, membership_request: bytes) -> None:
+    """マルチキャスト参加済みの場合のみグループ離脱を試行する。"""
+    if not membership_request:
+        return
+
+    try:
+        udp_socket.setsockopt(socket.IPPROTO_IP, socket.IP_DROP_MEMBERSHIP, membership_request)
+    except OSError:
+        logger.exception("異常: マルチキャストグループ離脱に失敗しました。グループ=%s", RECEIVE_MULTICAST_IP)
+
+
+# 補助処理
+def _build_receive_metrics(state: _ReceiveAggregationState) -> ReceiveMetrics:
+    """受信ループ完了後の状態から集計結果オブジェクトを構築する。"""
+    if state.first_tdb_received_utc is None or state.measurement_end_utc is None:
+        raise RuntimeError("受信集計結果を確定できませんでした。")
+
+    state.tdb_sentence_reassembler.finalize_pending_groups_as_boundary_failure()
+    split_reconstruct_success_count, split_reconstruct_failure_count = (
+        state.tdb_sentence_reassembler.get_split_reconstruct_counts()
+    )
+
+    logger.info(
+        "終了: UDPマルチキャスト受信処理が完了しました。受信TDB数=%d 受信payload総文字数=%d "
+        "分割再構成成功数=%d 分割再構成失敗数=%d",
+        state.rx_tdb_count,
+        state.rx_payload_chars_total,
+        split_reconstruct_success_count,
+        split_reconstruct_failure_count,
+    )
+    return ReceiveMetrics(
+        rx_tdb_count=state.rx_tdb_count,
+        rx_payload_chars_total=state.rx_payload_chars_total,
+        split_reconstruct_success_count=split_reconstruct_success_count,
+        split_reconstruct_failure_count=split_reconstruct_failure_count,
+        first_tdb_received_utc=state.first_tdb_received_utc,
+        measurement_end_utc=state.measurement_end_utc,
+        received_tdb_sentence_records=state.received_tdb_sentence_records,
+    )
+
+
 # メイン処理
 def collect_receive_metrics_until_next_minute_boundary() -> ReceiveMetrics:
     """TDB受信を集計し、初回受信分の次分境界で終了する。
@@ -332,126 +519,13 @@ def collect_receive_metrics_until_next_minute_boundary() -> ReceiveMetrics:
         RECEIVE_MULTICAST_IP,
     )
 
-    membership_request = b""
-    rx_tdb_count = 0
-    rx_payload_chars_total = 0
-    first_tdb_received_utc: datetime | None = None
-    measurement_end_utc: datetime | None = None
-    received_tdb_sentence_records: list[ReceivedTdbSentenceRecord] = []
-    tdb_sentence_reassembler = TdbSentenceReassembler()
-
-    udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-    try:
-        udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        udp_socket.bind((RECEIVE_BIND_IP, RECEIVE_PORT))
-        membership_request = _build_membership_request()
-        udp_socket.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, membership_request)
-        udp_socket.settimeout(RECEIVE_SOCKET_TIMEOUT_SECONDS)
-    except OSError:
-        udp_socket.close()
-        logger.exception(
-            "異常: UDP受信ソケットの初期化に失敗しました。待受=%s:%s グループ=%s",
-            RECEIVE_BIND_IP,
-            RECEIVE_PORT,
-            RECEIVE_MULTICAST_IP,
-        )
-        raise
+    state = _ReceiveAggregationState()
+    udp_socket, membership_request = _initialize_udp_socket()
 
     with udp_socket:
         try:
-            while True:
-                current_utc = datetime.now(UTC)
-                if measurement_end_utc is not None and current_utc >= measurement_end_utc:
-                    logger.info(
-                        "終了: 計測終了時刻に到達したため受信集計を終了します。終了時刻=%s",
-                        _format_utc_log_text(measurement_end_utc),
-                    )
-                    break
-
-                try:
-                    received_data, sender_address = udp_socket.recvfrom(RECEIVE_BUFFER_SIZE)
-                except TimeoutError:
-                    continue
-                except OSError:
-                    logger.exception("異常: UDP受信に失敗しました。待受=%s:%s", RECEIVE_BIND_IP, RECEIVE_PORT)
-                    continue
-
-                received_text = received_data.decode("utf-8", errors="replace")
-                target_sentences = _extract_target_tdb_sentences(received_text)
-                if not target_sentences:
-                    continue
-
-                logger.info(
-                    "開始: TDB候補データを受信しました。送信元=%s:%s 件数=%d",
-                    sender_address[0],
-                    sender_address[1],
-                    len(target_sentences),
-                )
-
-                for tdb_sentence in target_sentences:
-                    sentence_received_utc = datetime.now(UTC)
-                    if measurement_end_utc is not None and sentence_received_utc >= measurement_end_utc:
-                        logger.info(
-                            "終了: 計測終了時刻到達後のデータを検知したため受信集計を終了します。終了時刻=%s",
-                            _format_utc_log_text(measurement_end_utc),
-                        )
-                        break
-
-                    first_tdb_received_utc, measurement_end_utc = _start_measurement_window_if_needed(
-                        first_tdb_received_utc=first_tdb_received_utc,
-                        measurement_end_utc=measurement_end_utc,
-                        sentence_received_utc=sentence_received_utc,
-                    )
-
-                    reassembled_sentences = _reassemble_target_tdb_sentence(
-                        tdb_sentence=tdb_sentence,
-                        sentence_received_utc=sentence_received_utc,
-                        tdb_sentence_reassembler=tdb_sentence_reassembler,
-                    )
-                    if not reassembled_sentences:
-                        continue
-
-                    rx_tdb_count, rx_payload_chars_total = _accumulate_reassembled_sentences(
-                        reassembled_sentences=reassembled_sentences,
-                        sentence_received_utc=sentence_received_utc,
-                        rx_tdb_count=rx_tdb_count,
-                        rx_payload_chars_total=rx_payload_chars_total,
-                        received_tdb_sentence_records=received_tdb_sentence_records,
-                    )
-                else:
-                    continue
-                break
+            _run_receive_loop(udp_socket, state)
         finally:
-            if membership_request:
-                try:
-                    udp_socket.setsockopt(socket.IPPROTO_IP, socket.IP_DROP_MEMBERSHIP, membership_request)
-                except OSError:
-                    logger.exception(
-                        "異常: マルチキャストグループ離脱に失敗しました。グループ=%s", RECEIVE_MULTICAST_IP
-                    )
+            _leave_multicast_group_if_needed(udp_socket, membership_request)
 
-    if first_tdb_received_utc is None or measurement_end_utc is None:
-        raise RuntimeError("受信集計結果を確定できませんでした。")
-
-    tdb_sentence_reassembler.finalize_pending_groups_as_boundary_failure()
-    split_reconstruct_success_count, split_reconstruct_failure_count = (
-        tdb_sentence_reassembler.get_split_reconstruct_counts()
-    )
-
-    logger.info(
-        "終了: UDPマルチキャスト受信処理が完了しました。受信TDB数=%d 受信payload総文字数=%d "
-        "分割再構成成功数=%d 分割再構成失敗数=%d",
-        rx_tdb_count,
-        rx_payload_chars_total,
-        split_reconstruct_success_count,
-        split_reconstruct_failure_count,
-    )
-    return ReceiveMetrics(
-        rx_tdb_count=rx_tdb_count,
-        rx_payload_chars_total=rx_payload_chars_total,
-        split_reconstruct_success_count=split_reconstruct_success_count,
-        split_reconstruct_failure_count=split_reconstruct_failure_count,
-        first_tdb_received_utc=first_tdb_received_utc,
-        measurement_end_utc=measurement_end_utc,
-        received_tdb_sentence_records=received_tdb_sentence_records,
-    )
+    return _build_receive_metrics(state)
