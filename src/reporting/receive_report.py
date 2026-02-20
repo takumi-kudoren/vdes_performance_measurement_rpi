@@ -79,8 +79,9 @@ def write_receive_report_jsonl(
         "record_type": receive_report_constants.SUMMARY_RECORD_TYPE,
         "rx_tdb_count": rx_tdb_count,
         "rx_payload_chars_total": rx_payload_chars_total,
-        "split_reconstruct_success_count": split_reconstruct_success_count,
-        "split_reconstruct_failure_count": split_reconstruct_failure_count,
+        # 一時対応: 再構成成功数/失敗数はJSONLへ記載しない。
+        # "split_reconstruct_success_count": split_reconstruct_success_count,
+        # "split_reconstruct_failure_count": split_reconstruct_failure_count,
     }
     report_jsonl_lines.append(json.dumps(summary_record, ensure_ascii=False))
 
